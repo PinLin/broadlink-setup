@@ -1,0 +1,56 @@
+# ---------------------------------------------------------------------------
+# Flutter / Dart
+# ---------------------------------------------------------------------------
+app/.dart_tool/
+app/build/
+app/.idea/
+app/.flutter-plugins
+app/.flutter-plugins-dependencies
+app/*.iml
+
+# Android Gradle output
+app/android/.gradle/
+app/android/.idea/
+app/android/local.properties
+app/android/app/release/
+
+# iOS Xcode output (relevant later for v2)
+app/ios/Pods/
+app/ios/.symlinks/
+app/ios/Flutter/Flutter.framework
+app/ios/Flutter/Flutter.podspec
+app/ios/Runner.xcworkspace/xcuserdata/
+app/ios/Runner.xcodeproj/xcuserdata/
+
+# ---------------------------------------------------------------------------
+# Python
+# ---------------------------------------------------------------------------
+.venv/
+__pycache__/
+*.pyc
+
+# ---------------------------------------------------------------------------
+# APK reverse-engineering scratch (regenerable from the original APKs)
+# ---------------------------------------------------------------------------
+# Original APKs and download cache — too large for git, and redistributing
+# vendor binaries is not what we want this repo to do.
+apks/
+downloads/
+
+# Decompiled output (jadx). Huge, and regenerable via:
+#   jadx -d analysis/jadx_<name> apks/<apk-file>
+jadx-out/
+reverse/
+analysis/jadx_*/
+
+# ---------------------------------------------------------------------------
+# IDE / OS
+# ---------------------------------------------------------------------------
+.DS_Store
+.vscode/
+*.swp
+
+# ---------------------------------------------------------------------------
+# Claude Code: keep shared settings, hide per-user overrides
+# ---------------------------------------------------------------------------
+.claude/settings.local.json
