@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
@@ -141,13 +142,20 @@ class LanListener {
     Duration broadcastInterval = const Duration(seconds: 5),
     int discoveryPort = 80,
     int utcOffsetHours = 0,
+    String targetAddress = '255.255.255.255',
   })  : _broadcastInterval = broadcastInterval,
         _discoveryPort = discoveryPort,
-        _utcOffsetHours = utcOffsetHours;
+        _utcOffsetHours = utcOffsetHours,
+        _targetAddress = targetAddress;
 
   final Duration _broadcastInterval;
   final int _discoveryPort;
   final int _utcOffsetHours;
+
+  /// Destination address for hello packets. Defaults to the LAN broadcast
+  /// address; overridable so tests can point discovery at a loopback fake
+  /// device instead of a real broadcast domain.
+  final String _targetAddress;
 
   Stream<DiscoveredDevice> listen({
     required Duration timeout,
@@ -168,7 +176,7 @@ class LanListener {
       );
       socket.send(
         packet,
-        InternetAddress('255.255.255.255'),
+        InternetAddress(_targetAddress),
         _discoveryPort,
       );
     }
@@ -177,6 +185,13 @@ class LanListener {
     final ticker = Stream<void>.periodic(_broadcastInterval).listen(
       (_) => sendHello(),
     );
+    // RawDatagramSocket's event stream is edge-triggered: with no incoming
+    // traffic at all it only ever fires one initial `write` event and then
+    // goes silent, so a deadline check that only runs inside the `await for`
+    // body would never re-evaluate and the stream would hang forever when no
+    // device responds. Force the stream to end at the deadline by closing
+    // the socket, which reliably emits a terminal `closed` event.
+    final deadlineTimer = Timer(timeout, socket.close);
 
     try {
       await for (final event in socket) {
@@ -192,6 +207,7 @@ class LanListener {
         yield device;
       }
     } finally {
+      deadlineTimer.cancel();
       await ticker.cancel();
       socket.close();
     }

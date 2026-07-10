@@ -94,5 +94,64 @@ void main() {
       expect(packet.sublist(0x44, 0x44 + 32), everyElement(0));
       expect(packet.sublist(0x64, 0x64 + 32), everyElement(0));
     });
+
+    test('accepts SSID at exactly the 32-byte upper bound', () {
+      final ssid = Uint8List(32)..fillRange(0, 32, 'A'.codeUnitAt(0));
+      final password = Uint8List.fromList('p'.codeUnits);
+
+      final packet = buildApPacket(
+        ssid: ssid,
+        password: password,
+        security: SecurityMode.wpa2,
+      );
+
+      expect(packet[0x84], 32);
+      expect(packet.sublist(0x44, 0x44 + 32), equals(ssid));
+    });
+
+    test('accepts password at exactly the 32-byte upper bound', () {
+      final ssid = Uint8List.fromList('s'.codeUnits);
+      final password = Uint8List(32)..fillRange(0, 32, 'B'.codeUnitAt(0));
+
+      final packet = buildApPacket(
+        ssid: ssid,
+        password: password,
+        security: SecurityMode.wpa2,
+      );
+
+      expect(packet[0x85], 32);
+      expect(packet.sublist(0x64, 0x64 + 32), equals(password));
+    });
+
+    test('accepts SSID one byte under the upper bound (31 bytes)', () {
+      final ssid = Uint8List(31)..fillRange(0, 31, 'A'.codeUnitAt(0));
+      final password = Uint8List.fromList('p'.codeUnits);
+
+      final packet = buildApPacket(
+        ssid: ssid,
+        password: password,
+        security: SecurityMode.wpa2,
+      );
+
+      expect(packet[0x84], 31);
+      expect(packet.sublist(0x44, 0x44 + 31), equals(ssid));
+      // Byte after the written SSID region stays zero-padded.
+      expect(packet[0x44 + 31], 0);
+    });
+
+    test('accepts password one byte under the upper bound (31 bytes)', () {
+      final ssid = Uint8List.fromList('s'.codeUnits);
+      final password = Uint8List(31)..fillRange(0, 31, 'B'.codeUnitAt(0));
+
+      final packet = buildApPacket(
+        ssid: ssid,
+        password: password,
+        security: SecurityMode.wpa2,
+      );
+
+      expect(packet[0x85], 31);
+      expect(packet.sublist(0x64, 0x64 + 31), equals(password));
+      expect(packet[0x64 + 31], 0);
+    });
   });
 }

@@ -6,6 +6,7 @@ import 'package:flutter/material.dart';
 import 'package:permission_handler/permission_handler.dart';
 
 import 'diagnostics.dart';
+import 'diagnostics_view.dart';
 import 'platform/platform_exception_codes.dart';
 import 'platform/wifi_binder.dart';
 import 'platform/wifi_binder_factory.dart';
@@ -52,7 +53,8 @@ class SetupScreen extends StatefulWidget {
         debugApSsid = null,
         debugHomeNetworks = const [],
         debugDiscovered = null,
-        debugError = null;
+        debugError = null,
+        debugSendPayloadOverride = null;
 
   @visibleForTesting
   const SetupScreen.preview({
@@ -62,6 +64,7 @@ class SetupScreen extends StatefulWidget {
     this.debugHomeNetworks = const [],
     this.debugDiscovered,
     this.debugError,
+    this.debugSendPayloadOverride,
   });
 
   final SetupStep? debugInitialStep;
@@ -69,6 +72,13 @@ class SetupScreen extends StatefulWidget {
   final List<WifiNetwork> debugHomeNetworks;
   final DiscoveredDevice? debugDiscovered;
   final String? debugError;
+
+  /// Test-only seam: when set, [_sendPayload] calls this instead of opening a
+  /// real [RawDatagramSocket]. Lets widget tests pin the provision coroutine
+  /// at its first await (right after the `sendingCredentials` tree swap)
+  /// without ever touching real platform/network code — mirrors the
+  /// kasa-setup sibling project's `binderOverride` test seam.
+  final Future<void> Function(Uint8List payload)? debugSendPayloadOverride;
 
   @override
   State<SetupScreen> createState() => _SetupScreenState();
@@ -133,7 +143,13 @@ class _SetupScreenState extends State<SetupScreen> {
     _manualSsidCtl.dispose();
     _passwordCtl.dispose();
     _apPoller?.cancel();
-    _binder.leave();
+    // Use the already-created binder (if any) rather than the `_binder`
+    // getter: in real usage `_wifiBinder` is always populated by the
+    // synchronous prefix of `_loadDeviceInfo()` in initState before dispose
+    // can run, so this is a no-op behavior change there. It avoids forcing
+    // a fresh (and, on unsupported platforms/test hosts, throwing) binder
+    // creation just to immediately discard it.
+    _wifiBinder?.leave();
     super.dispose();
   }
 
@@ -223,7 +239,11 @@ class _SetupScreenState extends State<SetupScreen> {
 
   Future<void> _joinAp(String ssid) async {
     if (!mounted) return;
-    Diagnostics.instance.event('join.ap', 'joining "$ssid"');
+    // Device-AP SSID text is never written to the diagnostic log, even
+    // though it is a device-broadcast, non-secret name — only its length,
+    // to keep the "never write SSID text" rule exceptionless.
+    Diagnostics.instance
+        .event('join.ap', 'joining hotspot (ssidLen=${ssid.length})');
     setState(() {
       _joiningAp = ssid;
       _joinError = null;
@@ -231,7 +251,8 @@ class _SetupScreenState extends State<SetupScreen> {
     try {
       await _binder.joinOpenAp(ssid);
       if (!mounted) return;
-      Diagnostics.instance.event('join.ap', 'joined "$ssid", process bound');
+      Diagnostics.instance.event(
+          'join.ap', 'joined hotspot (ssidLen=${ssid.length}), process bound');
       _apPoller?.cancel();
       unawaited(_refreshHomeNetworks());
       setState(() {
@@ -241,9 +262,12 @@ class _SetupScreenState extends State<SetupScreen> {
       });
     } on WifiBinderException catch (e) {
       if (!mounted) return;
+      // WifiBinderException.message embeds the literal current SSID for
+      // some codes (e.g. notBroadlink — see _describeError below), so only
+      // the error code is safe to log, never e.message.
       Diagnostics.instance.event(
         'join.ap',
-        'failed: ${e.code.name}: ${e.message}',
+        'failed: code=${e.code.name}',
         level: DiagLevel.error,
       );
       setState(() {
@@ -391,17 +415,23 @@ class _SetupScreenState extends State<SetupScreen> {
         _step = SetupStep.done;
       });
     } on WifiBinderException catch (e) {
+      // WifiBinderException.message embeds the literal current SSID for
+      // some codes (e.g. notBroadlink — see _describeError below), so only
+      // the error code is safe to log, never e.message.
       Diagnostics.instance.event(
         'provision',
-        'wifibinder error ${e.code.name}: ${e.message}',
+        'wifibinder error code=${e.code.name}',
         level: DiagLevel.error,
       );
       _showError(_describeError(e));
       await _binder.leave();
     } catch (e, st) {
+      // Never interpolate `$e` — an arbitrary Exception (e.g. a
+      // PlatformException surfaced from native join code) is not
+      // guaranteed not to embed the literal SSID/password in its message.
       Diagnostics.instance.event(
         'provision',
-        'unexpected: $e\n$st',
+        'unexpected: ${e.runtimeType}\n$st',
         level: DiagLevel.error,
       );
       _showError(e.toString());
@@ -410,6 +440,9 @@ class _SetupScreenState extends State<SetupScreen> {
   }
 
   Future<void> _sendPayload(Uint8List payload) async {
+    if (widget.debugSendPayloadOverride != null) {
+      return widget.debugSendPayloadOverride!(payload);
+    }
     // We're bound to the BroadlinkProv network — RawDatagramSocket sourced
     // here will route via Wi-Fi. Send 8x with 500 ms gap; the device usually
     // accepts after 1 and reboots out of AP mode, so later sends may raise
@@ -541,6 +574,15 @@ class _SetupScreenState extends State<SetupScreen> {
       appBar: AppBar(
         title: const Text('BroadLink RM mini 3 Setup'),
         backgroundColor: Theme.of(context).colorScheme.inversePrimary,
+        actions: [
+          IconButton(
+            icon: const Icon(Icons.bug_report_outlined),
+            tooltip: 'View diagnostics',
+            onPressed: () => Navigator.of(context).push(
+              MaterialPageRoute(builder: (_) => const DiagnosticsView()),
+            ),
+          ),
+        ],
       ),
       body: SafeArea(
         child: Padding(
@@ -684,7 +726,12 @@ class _SetupScreenState extends State<SetupScreen> {
               child: OutlinedButton.icon(
                 icon: const Icon(Icons.settings),
                 label: const Text('Wi-Fi Settings'),
-                onPressed: _binder.openWifiSettings,
+                // Closure instead of a direct tear-off: defers evaluating
+                // the `_binder` getter until the button is actually
+                // pressed, instead of on every build. Same behavior once
+                // pressed; just avoids eagerly touching the platform binder
+                // while merely rendering this screen.
+                onPressed: () => _binder.openWifiSettings(),
               ),
             ),
           ],
@@ -847,44 +894,10 @@ class _SetupScreenState extends State<SetupScreen> {
       return;
     }
 
-    final ctl = TextEditingController();
-    var show = false;
     final password = await showDialog<String>(
       context: context,
-      builder: (ctx) => StatefulBuilder(
-        builder: (ctx, setLocal) => AlertDialog(
-          title: Text('Password for "${n.ssid}"'),
-          content: TextField(
-            controller: ctl,
-            autofocus: true,
-            obscureText: !show,
-            decoration: InputDecoration(
-              labelText: 'Wi-Fi Password',
-              border: const OutlineInputBorder(),
-              suffixIcon: IconButton(
-                icon: Icon(show ? Icons.visibility_off : Icons.visibility),
-                onPressed: () => setLocal(() => show = !show),
-              ),
-            ),
-            onSubmitted: (v) =>
-                v.isEmpty ? null : Navigator.pop(ctx, v),
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Navigator.pop(ctx),
-              child: const Text('Cancel'),
-            ),
-            FilledButton(
-              onPressed: () => ctl.text.isEmpty
-                  ? null
-                  : Navigator.pop(ctx, ctl.text),
-              child: const Text('Provision'),
-            ),
-          ],
-        ),
-      ),
+      builder: (ctx) => _PasswordPromptDialog(ssid: n.ssid),
     );
-    ctl.dispose();
     if (password == null || password.isEmpty || !mounted) return;
     setState(() {
       _selectedHomeNetwork = n;
@@ -1127,6 +1140,63 @@ class _SetupScreenState extends State<SetupScreen> {
         FilledButton(
           onPressed: _restart,
           child: const Text('Start over'),
+        ),
+      ],
+    );
+  }
+}
+
+/// Modal password prompt for a secured home network. Owns its own
+/// [TextEditingController] so the controller is disposed exactly when this
+/// dialog's element unmounts (after the exit transition), never while the
+/// still-animating TextField references it. Pops the entered password on
+/// Provision / submit, or null on Cancel.
+class _PasswordPromptDialog extends StatefulWidget {
+  const _PasswordPromptDialog({required this.ssid});
+
+  final String ssid;
+
+  @override
+  State<_PasswordPromptDialog> createState() => _PasswordPromptDialogState();
+}
+
+class _PasswordPromptDialogState extends State<_PasswordPromptDialog> {
+  final _ctl = TextEditingController();
+  bool _show = false;
+
+  @override
+  void dispose() {
+    _ctl.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: Text('Password for "${widget.ssid}"'),
+      content: TextField(
+        controller: _ctl,
+        autofocus: true,
+        obscureText: !_show,
+        decoration: InputDecoration(
+          labelText: 'Wi-Fi Password',
+          border: const OutlineInputBorder(),
+          suffixIcon: IconButton(
+            icon: Icon(_show ? Icons.visibility_off : Icons.visibility),
+            onPressed: () => setState(() => _show = !_show),
+          ),
+        ),
+        onSubmitted: (v) => v.isEmpty ? null : Navigator.pop(context, v),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: () =>
+              _ctl.text.isEmpty ? null : Navigator.pop(context, _ctl.text),
+          child: const Text('Provision'),
         ),
       ],
     );
