@@ -2,6 +2,8 @@ allprojects {
     repositories {
         google()
         mavenCentral()
+        // FreeDroidWarn (one-time FOSS upgrade notice) is distributed via JitPack.
+        maven { url = uri("https://jitpack.io") }
     }
 }
 

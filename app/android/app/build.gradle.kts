@@ -19,6 +19,11 @@ android {
         jvmTarget = JavaVersion.VERSION_17.toString()
     }
 
+    buildFeatures {
+        // Needed for BuildConfig.VERSION_CODE, used by FreeDroidWarn's upgrade check.
+        buildConfig = true
+    }
+
     defaultConfig {
         applicationId = "me.pinlin.broadlink_setup"
         // WifiNetworkSpecifier requires Android 10+ (API 29).
@@ -38,4 +43,10 @@ android {
 
 flutter {
     source = "../.."
+}
+
+dependencies {
+    // Shows a one-time dialog on app upgrade pointing users to FOSS alternatives.
+    // Pinned to the latest tagged release (V1.13); JitPack does not host a floating version.
+    implementation("com.github.woheller69:FreeDroidWarn:V1.13")
 }
